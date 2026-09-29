@@ -11,11 +11,37 @@ set -eu
 DISPLAY_NUM="${XVFB_DISPLAY_NUM:-99}"
 SCREEN_SPEC="${XVFB_SCREEN:-1920x1080x24}"
 
+display_is_alive() {
+    if command -v xdpyinfo >/dev/null 2>&1; then
+        DISPLAY=":${DISPLAY_NUM}" xdpyinfo >/dev/null 2>&1
+    else
+        [ -e "/tmp/.X11-unix/X${DISPLAY_NUM}" ]
+    fi
+}
+
+clear_stale_display_lock() {
+    # 容器重启时 /tmp 是持久化的，上一次运行的 Xvfb 随进程命名空间一起没了，
+    # 但它的锁文件和 socket 还留在原地。Xvfb 看到 /tmp/.X${DISPLAY_NUM}-lock
+    # 就直接退出（"Server is already active for display N"），于是每次重启都
+    # 静默退化成 SLIDER_HEADLESS=true —— 而无头模式正是滑块会被识破的原因。
+    lock="/tmp/.X${DISPLAY_NUM}-lock"
+    [ -e "$lock" ] || return 0
+    display_pid=$(tr -d ' \0\n' <"$lock" 2>/dev/null || true)
+    if [ -n "$display_pid" ] && kill -0 "$display_pid" 2>/dev/null; then
+        return 0  # 确实有 Xvfb 在跑，不动它
+    fi
+    echo "[entrypoint] 清理上次运行遗留的 X${DISPLAY_NUM} 锁（stale pid=${display_pid:-unknown}）"
+    rm -f "$lock" "/tmp/.X11-unix/X${DISPLAY_NUM}"
+    return 0
+}
+
 start_xvfb() {
     command -v Xvfb >/dev/null 2>&1 || {
         echo "[entrypoint] 未安装 Xvfb，滑块将退化为无头模式（通过率显著下降）"
         return 1
     }
+
+    clear_stale_display_lock
 
     Xvfb ":${DISPLAY_NUM}" -screen 0 "${SCREEN_SPEC}" -nolisten tcp -ac >/tmp/xvfb.log 2>&1 &
     xvfb_pid=$!
@@ -27,11 +53,7 @@ start_xvfb() {
             echo "[entrypoint] Xvfb 启动失败，详见 /tmp/xvfb.log"
             return 1
         fi
-        if command -v xdpyinfo >/dev/null 2>&1; then
-            if DISPLAY=":${DISPLAY_NUM}" xdpyinfo >/dev/null 2>&1; then
-                break
-            fi
-        elif [ -e "/tmp/.X11-unix/X${DISPLAY_NUM}" ]; then
+        if display_is_alive; then
             break
         fi
         i=$((i + 1))
