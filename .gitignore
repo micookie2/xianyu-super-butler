@@ -94,6 +94,12 @@ test_*.py
 *_test.py
 keywords_sample.xlsx
 
+# 例外：名字恰好以 _test.py 结尾的**源码**模块不能被上面的测试规则吞掉。
+# app/services/notification_test.py 就是这样被静默忽略、从未进入任何提交，
+# 而 reply_server 一直 import 它 —— 镜像启动时 ModuleNotFoundError，Web 端口起不来。
+# 新增同类命名的源码模块时，在这里补一条反向规则。
+!app/services/notification_test.py
+
 # 备份文件
 *.bak
 *.backup
