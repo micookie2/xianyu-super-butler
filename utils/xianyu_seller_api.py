@@ -41,6 +41,47 @@ class SellerApiError(Exception):
         super().__init__(f"{api} 调用失败: {'; '.join(ret) if ret else '未知错误'}")
 
 
+# 登录态失效的标识。与正常令牌过期不同（令牌刷新会自动重试），这几类必须
+# 重新扫码才能恢复，所以调用方需要一个独立状态而不是笼统归到接口失败。
+# 取值与本模块文件头注释、XianyuAutoAsync._is_normal_token_expiry 保持一致。
+UNAUTHORIZED_MARKERS = (
+    "FAIL_SYS_SESSION_EXPIRED",
+    "Session过期",
+    "FAIL_SYS_TOKEN_EMPTY",
+    "FAIL_SYS_TOKEN_EXPIRED",
+    "FAIL_SYS_TOKEN_EXOIRED",
+    "令牌过期",
+    "FAIL_SYS_ILLEGAL_ACCESS",
+    "SID_INVALID",
+    "AUTH_REJECT",
+    "NEED_LOGIN",
+)
+
+
+def classify_sku_discovery_error(error: Any) -> str:
+    """把 SKU 识别失败归到一个稳定状态码上。
+
+    返回三种值之一：
+
+    - ``"risk_control"``：平台风控/限流，调用方需要给出冷却时间，
+      继续重试只会把封锁时间越拉越长；
+    - ``"unauthorized"``：Cookie/登录态失效，属于终态，只能重新扫码；
+    - ``"error"``：其余业务失败，当成普通接口错误处理。
+
+    风控优先于登录态：平台限流时也会返回 FAIL_SYS_ 开头的错误码，
+      误判成未登录会把用户支去重新扫码，而真正需要做的只是等。
+    """
+    text = "; ".join(str(v) for v in (getattr(error, "ret", None) or []))
+    if not text:
+        text = str(error or "")
+
+    if risk_control.is_risk_control_error(text):
+        return "risk_control"
+    if any(marker in text for marker in UNAUTHORIZED_MARKERS):
+        return "unauthorized"
+    return "error"
+
+
 class XianyuSellerAPI:
     """卖家端接口客户端。
 
